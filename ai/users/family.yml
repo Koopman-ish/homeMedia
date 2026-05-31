@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  hermes-family:
+    image: hermes-agent:latest
+    container_name: hermes-family
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9121", "--no-open", "--insecure", "--tui"]
+    volumes:
+      - /opt/containers/ai/config/hermes-family:/opt/data
+    network_mode: host
+    restart: "no"

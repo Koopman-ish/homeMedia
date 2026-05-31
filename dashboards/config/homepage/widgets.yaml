@@ -1,0 +1,23 @@
+---
+- greeting:
+    text_size: xl
+    text: Welcome to the Koopman Homelab
+
+- datetime:
+    text_size: l
+    format:
+      timeStyle: short
+      dateStyle: long
+      hourCycle: h23
+
+- resources:
+    backend: resources
+    cpu: true
+    memory: true
+    disk: /media
+    label: Storage
+    expanded: true
+
+- search:
+    provider: google
+    target: _blank

@@ -1,0 +1,176 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════
+# AI STACK
+# Services: Hermes Agent (gateway + dashboard), n8n
+#
+# Hermes Dashboard  → http://hermes.${DOMAIN}    (persistent Claude agent)
+# n8n               → http://n8n.${DOMAIN}       (visual automation pipelines)
+#
+# Ollama + Open WebUI removed — redundant with Hermes + Claude.
+# Re-add Ollama only if you want a local model fallback (GPU recommended).
+#
+# HERMES PRE-REQUISITES (run once before first docker compose up):
+#   1. mkdir -p ${CONFIG_ROOT}/ai/config/hermes
+#   2. echo "ANTHROPIC_API_KEY=sk-ant-..." > ${CONFIG_ROOT}/ai/config/hermes/.env
+#   3. chmod 600 ${CONFIG_ROOT}/ai/config/hermes/.env
+#   4. Build image:
+#        git clone https://github.com/NousResearch/hermes-agent.git \
+#          ${CONFIG_ROOT}/ai/hermes-src
+#        docker build -t hermes-agent:latest ${CONFIG_ROOT}/ai/hermes-src
+#
+# HERMES TRAEFIK NOTE:
+#   Both Hermes services use network_mode: host (required for PTY +
+#   tool execution). Traefik routes to them via host.docker.internal.
+#   Ensure networking/docker-compose.yml has on the Traefik service:
+#     extra_hosts:
+#       - "host.docker.internal:host-gateway"
+#   And that networking/config/traefik/dynamic/hermes.yml exists.
+#
+# N8N + HERMES INTEGRATION:
+#   n8n can call Hermes as a workflow step via HTTP Request node:
+#     POST http://localhost:9119/api/chat   (if API server enabled)
+#   Hermes handles AI reasoning; n8n handles the deterministic plumbing.
+# ═══════════════════════════════════════════════════════════════════
+
+networks:
+  ai:
+    external: true
+  proxy:
+    external: true
+
+volumes:
+  n8n_data:
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  # HERMES GATEWAY — Persistent Claude agent (background process)
+  # Handles memory, skills, cron scheduling, tool execution,
+  # and the agent loop. No web UI — powers the dashboard below.
+  #
+  # Config lives in ${CONFIG_ROOT}/ai/config/hermes/:
+  #   .env         → ANTHROPIC_API_KEY (secrets, chmod 600)
+  #   config.yaml  → model, terminal backend, memory settings
+  #
+  # network_mode: host is required — Hermes spawns subprocesses,
+  # manages PTYs, and executes terminal commands. Bridge networking
+  # breaks tool execution.
+  #
+  # Useful commands:
+  #   Verify Claude:  docker exec hermes-gateway hermes --no-tui --exit-after-reply "What model are you?"
+  #   Switch model:   docker exec -it hermes-gateway hermes model
+  #   Check health:   docker exec hermes-gateway hermes doctor
+  # ───────────────────────────────────────────────────────────────
+  hermes-gateway:
+    build:
+      context: /opt/containers/ai/hermes-src
+      dockerfile: Dockerfile
+    image: hermes-agent:latest
+    container_name: hermes-gateway
+    network_mode: host
+    env_file:
+      - /opt/containers/.env
+    volumes:
+      - /opt/containers/ai/config/hermes:/opt/data
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker visibility
+      - /opt/containers:/opt/containers:ro           # All compose files (read-only)
+      - /mnt/storage:/mnt/storage:ro                 # Media storage stats
+    environment:
+      - TZ=${TZ}
+    command: ["gateway", "run"]
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "gateway"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # HERMES DASHBOARD — Web UI for Hermes Agent
+  # Served at http://hermes.${DOMAIN} via Traefik file provider.
+  # (Cannot use Docker labels — network_mode: host bypasses the
+  # Docker bridge that Traefik's Docker provider watches.)
+  #
+  # Traefik routes to this via host.docker.internal:9119.
+  # Protected by Authentik forward-auth in the Traefik file config.
+  # See: networking/config/traefik/dynamic/hermes.yml
+  #
+  # Binds to 0.0.0.0 so Traefik can reach it from the proxy network.
+  # DO NOT expose port 9119 directly — no built-in auth on the dashboard.
+  # ───────────────────────────────────────────────────────────────
+  hermes-dashboard:
+    image: hermes-agent:latest
+    container_name: hermes-dashboard
+    network_mode: host
+    env_file:
+      - /opt/containers/.env
+    volumes:
+      - /opt/containers/ai/config/hermes:/opt/data
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker visibility
+      - /opt/containers:/opt/containers:ro           # All compose files (read-only)
+      - /mnt/storage:/mnt/storage:ro                 # Media storage stats
+    environment:
+      - TZ=${TZ}
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure", "--tui"]
+    depends_on:
+      hermes-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # N8N — Visual automation + workflow engine
+  # Complements Hermes — handles deterministic pipeline plumbing
+  # where Hermes handles AI reasoning. 400+ native connectors.
+  #
+  # Practical combos with this stack:
+  #   Radarr/Sonarr webhook → n8n → Discord notification
+  #   Grafana alert → n8n → Hermes (AI summarises the issue)
+  #   Schedule → n8n → Jellyfin API → n8n → weekly stats email
+  #   GitHub PR → n8n → Hermes (AI reviews + posts comment)
+  # ───────────────────────────────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:1.88.0
+    container_name: n8n
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-changeme}
+      - N8N_LICENSE_ACTIVATION_KEY=${N8N_API_KEY}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_RUNNERS_ENABLED=true
+      - WEBHOOK_URL=http://n8n.${DOMAIN}/
+      - GENERIC_TIMEZONE=${TZ}
+      - N8N_HOST=0.0.0.0
+      - N8N_PROTOCOL=http
+      - NODE_FUNCTION_ALLOW_EXTERNAL=axios,node-fetch
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ${CONFIG_ROOT}/ai/config/n8n:/files
+    networks:
+      - ai
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+    restart: unless-stopped
+
+ # ───────────────────────────────────────────────────────────────
+  # OLLAMA — Local LLM runner
+  # Runs Qwen and other local models on CPU (GPU when upgraded)
+  # ───────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - /opt/containers/ai/config/ollama:/root/.ollama
+    networks:
+      - ai
+    restart: unless-stopped

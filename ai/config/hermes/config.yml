@@ -1,0 +1,12 @@
+# Hermes Agent
+model: anthropic/claude-sonnet-4-6
+
+terminal:
+  backend: docker
+
+
+memory: 
+  enabled: true
+
+# Agent personality (optional - edit to taste)
+# personality: professional

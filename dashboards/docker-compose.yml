@@ -1,0 +1,114 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════
+# DASHBOARDS STACK
+# Services: Homepage, Portainer, Watchtower, FileBrowser
+#
+# Homepage      → http://home.${DOMAIN}       (main dashboard)
+# Portainer     → http://portainer.${DOMAIN}  (container management)
+# FileBrowser   → http://files.${DOMAIN}      (NAS file manager)
+# Watchtower    → (no UI — runs in background, notifies on updates)
+# ═══════════════════════════════════════════════════════════════════
+
+networks:
+  proxy:
+    external: true
+
+volumes:
+  portainer_data:
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  # HOMEPAGE — Dashboard (the elite one per architecture doc)
+  # Integrates directly with *arr, Jellyfin, Grafana, Proxmox etc.
+  # Config lives in /config/services.yaml and /config/widgets.yaml
+  # Docs: https://gethomepage.dev
+  # ───────────────────────────────────────────────────────────────
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - HOMEPAGE_ALLOWED_HOSTS=home.homelab.lan,homelab.lan
+    volumes:
+      - ${CONFIG_ROOT}/dashboards/config/homepage:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${MEDIA_ROOT}:/media:ro    # For storage widget (shows disk usage)
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.homepage.rule=Host(`home.${DOMAIN}`) || Host(`${DOMAIN}`)"
+      - "traefik.http.routers.homepage.entrypoints=websecure"
+      - "traefik.http.services.homepage.loadbalancer.server.port=3000"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # PORTAINER — Container management UI
+  # Create admin account on first visit (before someone else does).
+  # ───────────────────────────────────────────────────────────────
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    env_file:
+      - /opt/containers/.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # FILEBROWSER — Web-based file manager for media storage
+  # Access, upload, download, organise /mnt/storage from browser.
+  # Default login: admin / admin  →  Change immediately.
+  # ───────────────────────────────────────────────────────────────
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - PUID=${PUID}
+      - PGID=${PGID}
+    volumes:
+      - ${MEDIA_ROOT}:/srv
+      - ${CONFIG_ROOT}/dashboards/config/filebrowser/filebrowser.db:/database.db
+      - ${CONFIG_ROOT}/dashboards/config/filebrowser/.filebrowser.json:/.filebrowser.json
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.filebrowser.rule=Host(`files.${DOMAIN}`)"
+      - "traefik.http.routers.filebrowser.entrypoints=websecure"
+      - "traefik.http.services.filebrowser.loadbalancer.server.port=80"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # WATCHTOWER — Automatic container image updates
+  # 4 AM daily. Cleans old images. Optional update notifications.
+  # ───────────────────────────────────────────────────────────────
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_ROLLING_RESTART=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      # - WATCHTOWER_NOTIFICATION_URL=${WATCHTOWER_NOTIFICATION_URL}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped

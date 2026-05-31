@@ -1,0 +1,186 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════
+# MONITORING STACK
+# Services: Prometheus, Grafana, Loki, Promtail, cAdvisor
+#
+# Grafana          → http://grafana.${DOMAIN}
+# Prometheus       → http://prometheus.${DOMAIN}  (internal — lock down)
+# cAdvisor         → http://cadvisor.${DOMAIN}    (internal — lock down)
+#
+# What gets monitored:
+#   - Container CPU/RAM/network via cAdvisor
+#   - Host metrics via node-exporter
+#   - Traefik request metrics (auto via Traefik prometheus endpoint)
+#   - *Arr app metrics (via Prometheus exporters or Grafana dashboards)
+#   - All container logs aggregated in Loki (query from Grafana)
+# ═══════════════════════════════════════════════════════════════════
+
+networks:
+  monitoring:
+    external: true
+  proxy:
+    external: true
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  # PROMETHEUS — Metrics collection + time-series DB
+  # Config: ${CONFIG_ROOT}/monitoring/config/prometheus/prometheus.yml
+  # ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    env_file:
+      - /opt/containers/.env
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ${CONFIG_ROOT}/monitoring/config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN}`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # GRAFANA — Dashboards and visualisation
+  # Default login: admin / ${GRAFANA_ADMIN_PASSWORD}
+  # Import dashboards: 893 (Docker), 1860 (Node Exporter Full),
+  #                    13639 (Traefik), 12888 (qBittorrent)
+  # ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://grafana.${DOMAIN}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ${CONFIG_ROOT}/monitoring/config/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - monitoring
+      - proxy
+    depends_on:
+      - prometheus
+      - loki
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # LOKI — Log aggregation (the Prometheus but for logs)
+  # Query logs from Grafana: Explore → Loki datasource
+  # ───────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    env_file:
+      - /opt/containers/.env
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ${CONFIG_ROOT}/monitoring/config/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # PROMTAIL — Log shipper (scrapes container logs → Loki)
+  # ───────────────────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    env_file:
+      - /opt/containers/.env
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ${CONFIG_ROOT}/monitoring/config/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # CADVISOR — Container CPU/RAM/network metrics → Prometheus
+  # ───────────────────────────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    env_file:
+      - /opt/containers/.env
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    networks:
+      - monitoring
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cadvisor.rule=Host(`cadvisor.${DOMAIN}`)"
+      - "traefik.http.routers.cadvisor.entrypoints=websecure"
+      - "traefik.http.services.cadvisor.loadbalancer.server.port=8080"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # NODE EXPORTER — Host-level metrics (CPU, RAM, disk, network)
+  # ───────────────────────────────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    env_file:
+      - /opt/containers/.env
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.rootfs=/rootfs"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+# ───────────────────────────────────────────────────────────────
+  # SPEEDTEST EXPORTER — Internet speed metrics for Prometheus
+  # Runs a speedtest every 30 minutes, exposes results
+  # ───────────────────────────────────────────────────────────────
+  speedtest-exporter:
+    image: miguelndecarvalho/speedtest-exporter:latest
+    container_name: speedtest-exporter
+    networks:
+      - monitoring
+    restart: unless-stopped

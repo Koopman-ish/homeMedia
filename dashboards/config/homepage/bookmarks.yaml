@@ -1,0 +1,12 @@
+---
+- Quick Access:
+    - Jellyfin:
+        - href: https://jellyfin.homelab.lan/sso/OID/start/Authentik
+    - Request Media:
+        - href: https://requests.homelab.lan
+    - Photos:
+        - href: https://immich.homelab.lan
+    - Files:
+        - href: https://nextcloud.homelab.lan
+    - AI Assistant:
+        - href: https://hermes.homelab.lan

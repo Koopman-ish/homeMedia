@@ -1,0 +1,22 @@
+---
+title: Koopman Homelab
+description: Family Media & Cloud Services
+color: slate
+theme: dark
+headerStyle: clean
+target: _blank
+hideVersion: true
+language: en
+layout:
+  Family:
+    style: row
+    columns: 4
+  Media Management:
+    style: row
+    columns: 4
+  Infrastructure:
+    style: row
+    columns: 4
+  AI:
+    style: row
+    columns: 2

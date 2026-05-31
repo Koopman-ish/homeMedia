@@ -1,0 +1,219 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════
+# SECURITY STACK
+# Services: CrowdSec, Fail2Ban, Authentik (SSO + MFA)
+#
+# CrowdSec         → community threat intelligence + IP blocking
+# Fail2Ban         → local brute-force protection
+# Authentik        → SSO / MFA for all internal services (Phase 3)
+#
+# Authentik UI     → http://authentik.${DOMAIN}
+#
+# Phase approach (per architecture doc):
+#   Phase 2 → Start CrowdSec + Fail2Ban
+#   Phase 3 → Add Authentik in front of sensitive services
+# ═══════════════════════════════════════════════════════════════════
+
+networks:
+  security:
+    external: true
+  proxy:
+    external: true
+
+volumes:
+  authentik_postgres:
+  authentik_redis:
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  # CROWDSEC — Collaborative security engine
+  # Parses logs, detects attacks, shares IP reputation with the
+  # CrowdSec community network. Also installs a Traefik bouncer
+  # to block malicious IPs before they hit your services.
+  #
+  # After start:
+  #   docker exec crowdsec cscli dashboard setup --listen 0.0.0.0
+  #   docker exec crowdsec cscli hub update
+  #   docker exec crowdsec cscli collections install crowdsecurity/traefik
+  # ───────────────────────────────────────────────────────────────
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: crowdsec
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - COLLECTIONS=crowdsecurity/linux crowdsecurity/traefik crowdsecurity/nginx
+      - ENROLL_KEY=${CROWDSEC_ENROLLMENT_KEY:-}
+    volumes:
+      - ${CONFIG_ROOT}/security/config/crowdsec/config:/etc/crowdsec
+      - ${CONFIG_ROOT}/security/config/crowdsec/data:/var/lib/crowdsec/data
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - security
+      - proxy
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # CROWDSEC TRAEFIK BOUNCER — Blocks bad IPs at the proxy layer
+  # After CrowdSec is up:
+  #   docker exec crowdsec cscli bouncers add traefik-bouncer
+  #   Copy the API key into CROWDSEC_BOUNCER_API_KEY below
+  # ───────────────────────────────────────────────────────────────
+  crowdsec-bouncer:
+    image: fbonalair/traefik-crowdsec-bouncer:latest
+    container_name: crowdsec-bouncer
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - TZ=${TZ}
+      - CROWDSEC_BOUNCER_API_KEY=${CROWDSEC_BOUNCER_API_KEY:-changeme}
+      - CROWDSEC_AGENT_HOST=crowdsec:8080
+      - PORT=8090
+    networks:
+      - security
+      - proxy
+    depends_on:
+      - crowdsec
+    labels:
+      # Register as Traefik middleware — add to any router that needs protection:
+      # traefik.http.routers.<name>.middlewares=crowdsec-bouncer@docker
+      - "traefik.enable=true"
+      - "traefik.http.services.crowdsec-bouncer.loadbalancer.server.port=8090"
+      - "traefik.http.middlewares.crowdsec-bouncer.forwardauth.address=http://crowdsec-bouncer:8090/api/v1/forwardAuth"
+      - "traefik.http.middlewares.crowdsec-bouncer.forwardauth.trustforwardheader=true"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # FAIL2BAN — Local brute-force protection
+  # Bans IPs that repeatedly fail auth on SSH, services, etc.
+  # ───────────────────────────────────────────────────────────────
+  fail2ban:
+    image: lscr.io/linuxserver/fail2ban:latest
+    container_name: fail2ban
+    env_file:
+      - /opt/containers/.env
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/security/config/fail2ban:/config
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/remotelogs/docker:ro
+      - /mnt/media/family/nextcloud/data/nextcloud.log:/remotelogs/nextcloud/nextcloud.log:ro
+      - /opt/containers/networking/logs/traefik/access.log:/remotelogs/traefik/access.log:ro
+    network_mode: host
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # AUTHENTIK — SSO / MFA / Identity Provider (Phase 3)
+  # Requires: PostgreSQL + Redis
+  # After setup: configure Traefik forward-auth middleware to protect
+  # any service by adding:
+  #   traefik.http.routers.<name>.middlewares=authentik@docker
+  # ───────────────────────────────────────────────────────────────
+  authentik-postgresql:
+    image: postgres:16-alpine
+    container_name: authentik-postgresql
+    env_file:
+      - /opt/containers/.env
+    environment:
+      - POSTGRES_DB=${AUTHENTIK_POSTGRES_DB:-authentik}
+      - POSTGRES_USER=${AUTHENTIK_POSTGRES_USER:-authentik}
+      - POSTGRES_PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
+    volumes:
+      - authentik_postgres:/var/lib/postgresql/data
+    networks:
+      - security
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  authentik-redis:
+    image: redis:alpine
+    container_name: authentik-redis
+    env_file:
+      - /opt/containers/.env
+    command: --save 60 1 --loglevel warning
+    volumes:
+      - authentik_redis:/data
+    networks:
+      - security
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:latest
+    container_name: authentik-server
+    env_file:
+      - /opt/containers/.env
+    command: server
+    environment:
+      - AUTHENTIK_REDIS__HOST=authentik-redis
+      - AUTHENTIK_POSTGRESQL__HOST=authentik-postgresql
+      - AUTHENTIK_POSTGRESQL__USER=${AUTHENTIK_POSTGRES_USER:-authentik}
+      - AUTHENTIK_POSTGRESQL__NAME=${AUTHENTIK_POSTGRES_DB:-authentik}
+      - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
+      - AUTHENTIK_ERROR_REPORTING__ENABLED=false
+    volumes:
+      - ${CONFIG_ROOT}/security/config/authentik/media:/media
+      - ${CONFIG_ROOT}/security/config/authentik/certs:/certs
+    networks:
+      - security
+      - proxy
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.authentik.rule=Host(`authentik.${DOMAIN}`)"
+      - "traefik.http.routers.authentik.entrypoints=websecure"
+      - "traefik.http.services.authentik.loadbalancer.server.port=9000"
+      # Forward auth middleware — add to any router to protect it
+      - "traefik.http.middlewares.authentik.forwardauth.address=http://authentik-server:9000/outpost.goauthentik.io/auth/traefik"
+      - "traefik.http.middlewares.authentik.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.authentik.forwardauth.authResponseHeaders=X-authentik-username,X-authentik-groups,X-authentik-email"
+    restart: unless-stopped
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:latest
+    container_name: authentik-worker
+    env_file:
+      - /opt/containers/.env
+    command: worker
+    environment:
+      - AUTHENTIK_REDIS__HOST=authentik-redis
+      - AUTHENTIK_POSTGRESQL__HOST=authentik-postgresql
+      - AUTHENTIK_POSTGRESQL__USER=${AUTHENTIK_POSTGRES_USER:-authentik}
+      - AUTHENTIK_POSTGRESQL__NAME=${AUTHENTIK_POSTGRES_DB:-authentik}
+      - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONFIG_ROOT}/security/config/authentik/media:/media
+      - ${CONFIG_ROOT}/security/config/authentik/certs:/certs
+    networks:
+      - security
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    restart: unless-stopped

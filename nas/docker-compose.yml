@@ -1,0 +1,295 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════
+# NAS STACK
+# Services: Immich (photos/videos), Nextcloud (files/backup)
+#
+# Immich          → http://immich.homelab.lan     (Google Photos replacement)
+# Nextcloud       → http://nextcloud.homelab.lan  (Google Drive replacement)
+#
+# AUTHENTIK SSO INTEGRATION (configure after first boot):
+#   Immich:     Settings → Administration → OAuth/OIDC
+#   Nextcloud:  Install "user_oidc" app → Admin → OIDC settings
+#   Both use Authentik as identity provider.
+#   See post-startup guide at bottom of this file.
+#
+# USER ACCOUNTS:
+#   Create in Authentik first, then sync to each service.
+#   Format: firstname.lastname (e.g. josh.koopman)
+#   Admin: full access to all services + settings
+#   Family: Immich, Nextcloud, Jellyfin, Jellyseerr, Homepage
+#
+# STORAGE:
+#   Photos/videos:  /mnt/media/family/immich/
+#   Files/backup:   /mnt/media/family/nextcloud/
+#
+# IMMICH ML NOTE:
+#   Running in CPU mode (no GPU driver available for GTX 770).
+#   Initial library scan will take several hours for large libraries.
+#   Swap to GPU mode when RTX card is installed — uncomment GPU section.
+# ═══════════════════════════════════════════════════════════════════
+
+
+networks:
+  proxy:
+    external: true
+  nas:
+    driver: bridge
+  immich_internal:
+    driver: bridge
+  nextcloud_internal:
+    driver: bridge
+
+volumes:
+  immich_postgres:
+  nextcloud_postgres:
+  nextcloud_redis:
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  # IMMICH SERVER — Main API + job processing
+  # All-in-one: handles uploads, albums, sharing, user management
+  # ───────────────────────────────────────────────────────────────
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    extra_hosts:
+      - "authentik.homelab.lan:10.0.0.32"
+      - "immich.homelab.lan:10.0.0.32"
+    container_name: immich-server
+    environment:
+      - DB_HOSTNAME=immich-postgres
+      - DB_USERNAME=immich
+      - DB_PASSWORD=${IMMICH_POSTGRES_PASSWORD}
+      - DB_DATABASE_NAME=immich
+      - REDIS_HOSTNAME=immich-redis
+      - UPLOAD_LOCATION=/usr/src/app/upload
+      - IMMICH_MACHINE_LEARNING_URL=http://immich-machine-learning:3003
+      - TZ=${TZ}
+      - NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/mkcert-rootCA.crt
+    volumes:
+      - /mnt/media/family/immich/library:/usr/src/app/upload
+      - /mnt/media/family/immich/thumbs:/usr/src/app/upload/thumbs
+      - /mnt/media/family/immich/profile:/usr/src/app/upload/profile
+      - /opt/containers/nas/config/mkcert-rootCA.crt:/usr/local/share/ca-certificates/mkcert-rootCA.crt:ro
+    depends_on:
+      immich-postgres:
+        condition: service_healthy
+      immich-redis:
+        condition: service_healthy
+    networks:
+      - immich_internal
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.immich.rule=Host(`immich.homelab.lan`)"
+      - "traefik.http.routers.immich.entrypoints=websecure"
+      - "traefik.http.services.immich.loadbalancer.server.port=2283"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2283/api/server/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ───────────────────────────────────────────────────────────────
+  # IMMICH MACHINE LEARNING — Face recognition, CLIP, smart search
+  # CPU MODE — no GPU acceleration (GTX 770 not supported)
+  # Initial scan of a large library takes hours. Normal new uploads
+  # process in seconds to minutes.
+  # TO ENABLE GPU: uncomment the `deploy` block below and restart.
+  # ───────────────────────────────────────────────────────────────
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    container_name: immich-machine-learning
+    environment:
+      - MACHINE_LEARNING_CACHE_FOLDER=/cache
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/nas/config/immich/ml-cache:/cache
+    networks:
+      - immich_internal
+    # ── GPU MODE (uncomment when RTX card installed) ───────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # ─────────────────────────────────────────────────────────────
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # IMMICH POSTGRES — Requires pgvecto.rs extension for ML vectors
+  # NOT interchangeable with standard postgres
+  # ───────────────────────────────────────────────────────────────
+  immich-postgres:
+    image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0
+    container_name: immich-postgres
+    environment:
+      - POSTGRES_DB=immich
+      - POSTGRES_USER=immich
+      - POSTGRES_PASSWORD=${IMMICH_POSTGRES_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--data-checksums
+    volumes:
+      - immich_postgres:/var/lib/postgresql/data
+    networks:
+      - immich_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d immich -U immich"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # IMMICH REDIS — Job queue + caching
+  # ───────────────────────────────────────────────────────────────
+  immich-redis:
+    image: redis:alpine
+    container_name: immich-redis
+    networks:
+      - immich_internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # NEXTCLOUD — Self-hosted Google Drive
+  # Files, backup storage, calendar, contacts
+  # Post-startup: install "user_oidc" app for Authentik SSO
+  # Admin panel → Apps → Search "user_oidc" → Install
+  # ───────────────────────────────────────────────────────────────
+  nextcloud:
+    image: nextcloud:latest
+    dns:
+      - 10.0.0.32
+      - 1.1.1.1
+    extra_hosts:
+      - "authentik.homelab.lan:10.0.0.32"
+      - "nextcloud.homelab.lan:10.0.0.32"
+    container_name: nextcloud
+    environment:
+      - POSTGRES_HOST=nextcloud-postgres
+      - POSTGRES_DB=nextcloud
+      - POSTGRES_USER=nextcloud
+      - POSTGRES_PASSWORD=${NEXTCLOUD_POSTGRES_PASSWORD}
+      - REDIS_HOST=nextcloud-redis
+      - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER:-admin}
+      - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+      - NEXTCLOUD_TRUSTED_DOMAINS=nextcloud.homelab.lan
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITECLIURL=https://nextcloud.homelab.lan
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/nas/config/nextcloud:/var/www/html
+      - /mnt/media/family/nextcloud/data:/var/www/html/data
+      - /opt/containers/nas/config/mkcert-rootCA.crt:/usr/local/share/ca-certificates/mkcert-rootCA.crt:ro
+    depends_on:
+      nextcloud-postgres:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_healthy
+    networks:
+      - nextcloud_internal
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nextcloud.rule=Host(`nextcloud.homelab.lan`)"
+      - "traefik.http.routers.nextcloud.entrypoints=websecure"
+      - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
+      # Nextcloud needs these headers for proper operation
+      - "traefik.http.middlewares.nextcloud-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.nextcloud.middlewares=nextcloud-headers"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # NEXTCLOUD POSTGRES
+  # ───────────────────────────────────────────────────────────────
+  nextcloud-postgres:
+    image: postgres:16-alpine
+    container_name: nextcloud-postgres
+    environment:
+      - POSTGRES_DB=nextcloud
+      - POSTGRES_USER=nextcloud
+      - POSTGRES_PASSWORD=${NEXTCLOUD_POSTGRES_PASSWORD}
+    volumes:
+      - nextcloud_postgres:/var/lib/postgresql/data
+    networks:
+      - nextcloud_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d nextcloud -U nextcloud"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # NEXTCLOUD REDIS — Session caching + file locking
+  # ───────────────────────────────────────────────────────────────
+  nextcloud-redis:
+    image: redis:alpine
+    container_name: nextcloud-redis
+    command: --save 60 1 --loglevel warning
+    volumes:
+      - nextcloud_redis:/data
+    networks:
+      - nextcloud_internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════════
+# POST-STARTUP: AUTHENTIK OIDC INTEGRATION
+# ═══════════════════════════════════════════════════════════════════
+#
+# ── IMMICH OIDC SETUP ─────────────────────────────────────────────
+# 1. In Authentik: create OAuth2/OIDC Provider
+#    Name:           immich-oidc
+#    Client type:    Confidential
+#    Redirect URIs:  http://immich.homelab.lan/auth/login
+#    Copy: Client ID + Client Secret
+#
+# 2. In Authentik: create Application
+#    Name:     Immich
+#    Provider: immich-oidc
+#
+# 3. In Immich: Administration → OAuth
+#    Issuer URL:     http://authentik.homelab.lan/application/o/immich/
+#    Client ID:      (from step 1)
+#    Client Secret:  (from step 1)
+#    Scope:          openid profile email
+#    Button text:    Login with Homelab SSO
+#    Auto-register:  Enable (creates Immich account on first SSO login)
+#
+# ── NEXTCLOUD OIDC SETUP ──────────────────────────────────────────
+# 1. In Nextcloud admin: Apps → Search "user_oidc" → Install
+#
+# 2. In Authentik: create OAuth2/OIDC Provider
+#    Name:           nextcloud-oidc
+#    Client type:    Confidential
+#    Redirect URIs:  http://nextcloud.homelab.lan/apps/user_oidc/code
+#    Copy: Client ID + Client Secret
+#
+# 3. In Nextcloud: Admin → OpenID Connect
+#    Discovery endpoint: http://authentik.homelab.lan/application/o/nextcloud/.well-known/openid-configuration
+#    Client ID:          (from step 2)
+#    Client Secret:      (from step 2)
+#
+# ── FAMILY USER ACCOUNTS ──────────────────────────────────────────
+# Create all accounts in Authentik first:
+#   Authentik → Directory → Users → Create
+#   Username format: firstname.lastname
+#   Assign to group: "family" (create this group)
+#   Admin only gets "authentik Admins" group
+#
+# Once SSO is configured, users log into Immich/Nextcloud/Jellyfin
+# with their Authentik credentials automatically.
+# ═══════════════════════════════════════════════════════════════════

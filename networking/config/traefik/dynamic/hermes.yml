@@ -1,0 +1,37 @@
+http:
+  routers:
+    hermes-dashboard:
+      rule: 'Host(`hermes.homelab.lan`)'
+      entrypoints:
+        - websecure
+      service: hermes-dashboard
+      middlewares:
+        - authentik@docker
+
+    hermes-josh:
+      rule: 'Host(`josh.ai.homelab.lan`)'
+      entrypoints:
+        - websecure
+      service: hermes-josh
+
+    hermes-family:
+      rule: 'Host(`ai.homelab.lan`)'
+      entrypoints:
+        - websecure
+      service: hermes-family
+
+  services:
+    hermes-dashboard:
+      loadBalancer:
+        servers:
+          - url: 'http://host.docker.internal:9119'
+
+    hermes-josh:
+      loadBalancer:
+        servers:
+          - url: 'http://host.docker.internal:9120'
+
+    hermes-family:
+      loadBalancer:
+        servers:
+          - url: 'http://host.docker.internal:9121'

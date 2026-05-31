@@ -1,0 +1,19 @@
+name: crowdsecurity/nginx
+parsers:
+#generic post-parsing of http stuff
+  - crowdsecurity/nginx-logs
+collections:
+  - crowdsecurity/base-http-scenarios
+scenarios:
+  - crowdsecurity/nginx-req-limit-exceeded
+description: "nginx support : parser and generic http scenarios"
+labels:
+  label: "Nginx - Generic Protection"
+author: crowdsecurity
+tags:
+  - security_engine
+  - linux
+  - nginx
+  - crawl
+  - scan
+

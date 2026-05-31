@@ -1,0 +1,15 @@
+2026-05-29 01:35:22|INFO    |root                            |BAZARR Finished searching for missing Series Subtitles. Check History for more information.|
+2026-05-29 01:52:28|INFO    |root                            |BAZARR Finished searching for missing Movies Subtitles. Check History for more information.|
+2026-05-29 04:00:02|INFO    |root                            |BAZARR All existing movie subtitles indexed from disk.|
+2026-05-29 04:00:51|ERROR   |root                            |BAZARR SignalR client for Radarr connection as been lost. Trying to reconnect...|
+2026-05-29 04:00:51|INFO    |root                            |BAZARR SignalR client for Radarr is connected and waiting for events.|
+2026-05-29 04:00:51|INFO    |root                            |BAZARR SignalR client for Radarr is connected and waiting for events.|
+2026-05-29 04:00:54|INFO    |root                            |BAZARR All existing episode subtitles indexed from disk.|
+2026-05-29 07:35:22|INFO    |root                            |BAZARR Finished searching for missing Series Subtitles. Check History for more information.|
+2026-05-29 07:52:28|INFO    |root                            |BAZARR Finished searching for missing Movies Subtitles. Check History for more information.|
+2026-05-29 11:47:23|INFO    |root                            |BAZARR Finished searching for Subtitles to upgrade. Check History for more information.|
+2026-05-29 13:35:22|INFO    |root                            |BAZARR Finished searching for missing Series Subtitles. Check History for more information.|
+2026-05-29 13:52:28|INFO    |root                            |BAZARR Finished searching for missing Movies Subtitles. Check History for more information.|
+2026-05-29 19:35:22|INFO    |root                            |BAZARR Finished searching for missing Series Subtitles. Check History for more information.|
+2026-05-29 19:52:28|INFO    |root                            |BAZARR Finished searching for missing Movies Subtitles. Check History for more information.|
+2026-05-29 23:47:22|INFO    |root                            |BAZARR Finished searching for Subtitles to upgrade. Check History for more information.|

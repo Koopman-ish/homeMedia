@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  hermes-josh:
+    image: hermes-agent:latest
+    container_name: hermes-josh
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9120", "--no-open", "--insecure", "--tui"]
+    volumes:
+      - /opt/containers/ai/config/hermes-josh:/opt/data
+    network_mode: host
+    restart: "no"

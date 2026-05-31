@@ -1,0 +1,12 @@
+2026-05-26 19:48:35|INFO    |root                            |Scheduler will use this timezone: Africa/Johannesburg|
+2026-05-26 19:48:43|INFO    |root                            |Interactive jobs queue started and waiting for tasks|
+2026-05-26 19:48:43|INFO    |waitress                        |BAZARR is started and waiting for requests on: http://***.***.***.***:6767|
+2026-05-26 19:48:43|INFO    |waitress                        |BAZARR is started and waiting for requests on: http://[::]:6767|
+2026-05-26 20:03:41|INFO    |root                            |BAZARR trying to connect to Sonarr SignalR feed...|
+2026-05-26 20:03:41|INFO    |root                            |BAZARR SignalR client for Sonarr is connected and waiting for events.|
+2026-05-26 20:04:05|INFO    |root                            |BAZARR trying to connect to Radarr SignalR feed...|
+2026-05-26 20:04:05|INFO    |root                            |BAZARR SignalR client for Radarr is connected and waiting for events.|
+2026-05-26 20:08:12|INFO    |root                            |BAZARR throttled providers have been reset (only AuthenticationError, ConfigurationError and PaymentRequired).|
+2026-05-26 20:08:12|INFO    |root                            |BAZARR throttled providers have been reset (only AuthenticationError, ConfigurationError and PaymentRequired).|
+2026-05-26 20:08:12|INFO    |root                            |BAZARR throttled providers have been reset (only AuthenticationError, ConfigurationError and PaymentRequired).|
+2026-05-26 20:08:12|INFO    |root                            |BAZARR throttled providers have been reset (only AuthenticationError, ConfigurationError and PaymentRequired).|

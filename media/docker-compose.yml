@@ -1,0 +1,369 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════
+# MEDIA STACK
+# Services: gluetun, qbittorrent, flaresolverr, prowlarr,
+#           radarr, sonarr, lidarr, readarr, bazarr,
+#           unpackerr, recyclarr, shoko-server, jellyfin, jellyseerr
+#
+# Jellyfin     → http://jellyfin.homelab.lan
+# Jellyseerr   → http://requests.homelab.lan
+# Radarr       → http://radarr.homelab.lan
+# Sonarr       → http://sonarr.homelab.lan
+# Lidarr       → http://lidarr.homelab.lan
+# Readarr      → http://readarr.homelab.lan
+# Prowlarr     → http://prowlarr.homelab.lan
+# Bazarr       → http://bazarr.homelab.lan
+#
+# STORAGE: /mnt/media/library/
+# VPN:     All torrent traffic routes through gluetun (kill-switch)
+#
+# VPN KEY must be set in /opt/containers/.env before starting:
+#   VPN_PROVIDER=mullvad
+#   VPN_WIREGUARD_PRIVATE_KEY=<key>
+#   VPN_SERVER_COUNTRY=Netherlands
+# ═══════════════════════════════════════════════════════════════════
+
+networks:
+  media:
+    external: true
+  proxy:
+    external: true
+  monitoring:
+    external: true
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  # GLUETUN — VPN container. qBittorrent is a passenger.
+  # ───────────────────────────────────────────────────────────────
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_PROVIDER:-protonvpn}
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${VPN_WIREGUARD_PRIVATE_KEY}
+      - SERVER_COUNTRIES=${VPN_SERVER_COUNTRY:-Netherlands}
+      - TZ=${TZ}
+      - FIREWALL_INPUT_PORTS=8080
+      - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,10.0.0.0/8
+    ports:
+      - "8080:8080"
+    networks:
+      - media
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # QBITTORRENT — Torrent client (VPN kill-switch via gluetun)
+  # ───────────────────────────────────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun"
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8080
+    volumes:
+      - /opt/containers/media/config/qbittorrent:/config
+      - /mnt/media/library/downloads:/downloads
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # FLARESOLVERR — Cloudflare bypass for protected indexers
+  # ───────────────────────────────────────────────────────────────
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ}
+    networks:
+      - media
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # PROWLARR — Central indexer manager
+  # After setup: sync all indexers to *arr apps via one button
+  # Add FlareSolverr: Settings → Indexers → host: http://flaresolverr:8191
+  # ───────────────────────────────────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/prowlarr:/config
+    networks:
+      - media
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.homelab.lan`)"
+      - "traefik.http.routers.prowlarr.entrypoints=websecure"
+      - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # RADARR — Movie automation
+  # Root folder: /media/movies
+  # ───────────────────────────────────────────────────────────────
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/radarr:/config
+      - /mnt/media/library:/media
+    networks:
+      - media
+      - proxy
+      - monitoring
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radarr.rule=Host(`radarr.homelab.lan`)"
+      - "traefik.http.routers.radarr.entrypoints=websecure"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # SONARR — TV series + anime automation
+  # Root folders: /media/tv and /media/anime
+  # Set Series Type = Anime per show for anime
+  # ───────────────────────────────────────────────────────────────
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/sonarr:/config
+      - /mnt/media/library:/media
+    networks:
+      - media
+      - proxy
+      - monitoring
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr.rule=Host(`sonarr.homelab.lan`)"
+      - "traefik.http.routers.sonarr.entrypoints=websecure"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # LIDARR — Music automation
+  # Root folder: /media/music
+  # ───────────────────────────────────────────────────────────────
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/lidarr:/config
+      - /mnt/media/library:/media
+    networks:
+      - media
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lidarr.rule=Host(`lidarr.homelab.lan`)"
+      - "traefik.http.routers.lidarr.entrypoints=websecure"
+      - "traefik.http.services.lidarr.loadbalancer.server.port=8686"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # BAZARR — Automatic subtitle downloads
+  # Providers: OpenSubtitles, Subscene, YIFY Subtitles
+  # ───────────────────────────────────────────────────────────────
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/bazarr:/config
+      - /mnt/media/library:/media
+    networks:
+      - media
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bazarr.rule=Host(`bazarr.homelab.lan`)"
+      - "traefik.http.routers.bazarr.entrypoints=websecure"
+      - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # UNPACKERR — Auto-extracts RAR/ZIP archives post-download
+  # ───────────────────────────────────────────────────────────────
+  unpackerr:
+    image: golift/unpackerr:latest
+    container_name: unpackerr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - UN_SONARR_0_URL=http://sonarr:8989
+      - UN_SONARR_0_API_KEY=${SONARR_API_KEY:-}
+      - UN_RADARR_0_URL=http://radarr:7878
+      - UN_RADARR_0_API_KEY=${RADARR_API_KEY:-}
+      - UN_LIDARR_0_URL=http://lidarr:8686
+      - UN_LIDARR_0_API_KEY=${LIDARR_API_KEY:-}
+      - UN_READARR_0_URL=http://readarr:8787
+      - UN_READARR_0_API_KEY=${READARR_API_KEY:-}
+    volumes:
+      - /mnt/media/library/downloads:/downloads
+    networks:
+      - media
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # RECYCLARR — TRaSH Guides quality profile sync
+  # Config: /opt/containers/media/config/recyclarr/recyclarr.yml
+  # Manual sync: docker exec recyclarr recyclarr sync
+  # ───────────────────────────────────────────────────────────────
+  recyclarr:
+    image: recyclarr/recyclarr:latest
+    container_name: recyclarr
+    environment:
+      - TZ=${TZ}
+      - RADARR_API_KEY=${RADARR_API_KEY:-}
+      - SONARR_API_KEY=${SONARR_API_KEY:-}
+    volumes:
+      - /opt/containers/media/config/recyclarr:/config
+    networks:
+      - media
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # SHOKO SERVER — Anime metadata engine (AniDB)
+  # Install Shoko plugin in Jellyfin for deep anime library support
+  # ───────────────────────────────────────────────────────────────
+  shoko-server:
+    image: shokoanime/server:latest
+    container_name: shoko-server
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/shoko:/home/shoko/.shoko
+      - /mnt/media/library/anime:/anime:ro
+    networks:
+      - media
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.shoko.rule=Host(`shoko.homelab.lan`)"
+      - "traefik.http.routers.shoko.entrypoints=websecure"
+      - "traefik.http.services.shoko.loadbalancer.server.port=8111"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # JELLYFIN — Media server
+  # Per-user accounts, watch history, recommendations
+  # Plugins: Trakt, Last.fm, Shoko, Intro Skipper, Merge Versions
+  # OIDC: Install "Jellyfin SSO" plugin for Authentik integration
+  # Family members each get their own Jellyfin account via SSO
+  # ───────────────────────────────────────────────────────────────
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    extra_hosts:
+      - "authentik.homelab.lan:10.0.0.32"
+      - "jellyfin.homelab.lan:10.0.0.32"
+    container_name: jellyfin
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - JELLYFIN_PublishedServerUrl=http://jellyfin.homelab.lan
+    volumes:
+      - /opt/containers/media/config/jellyfin:/config
+      - /mnt/media/library:/media:ro
+    ports:
+      - "8096:8096" 
+      - "7359:7359/udp"   # LAN discovery
+      - "1900:1900/udp"   # DLNA
+    networks:
+      - media
+      - proxy
+      - monitoring
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.homelab.lan`)"
+      - "traefik.http.routers.jellyfin.entrypoints=websecure"
+      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # JELLYSEERR — Media request management
+  # Family members request movies/series here
+  # Connects to Jellyfin + Radarr + Sonarr
+  # ───────────────────────────────────────────────────────────────
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/jellyseerr:/app/config
+    networks:
+      - media
+      - proxy
+    depends_on:
+      - jellyfin
+      - radarr
+      - sonarr
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyseerr.rule=Host(`requests.homelab.lan`)"
+      - "traefik.http.routers.jellyseerr.entrypoints=websecure"
+      - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────
+  # MAINTAINERR — Media cleanup management
+  # Auto Deletes unwatched movies and series if not queries in the past 365 days
+  # Connects to Jellyfin + Radarr + Sonarr
+  # ───────────────────────────────────────────────────────────────
+  maintainerr:
+    image: ghcr.io/jorenn92/maintainerr:latest
+    container_name: maintainerr
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - /opt/containers/media/config/maintainerr:/opt/data
+    networks:
+      - media
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.maintainerr.rule=Host(`maintainerr.homelab.lan`)"
+      - "traefik.http.routers.maintainerr.entrypoints=websecure"
+      - "traefik.http.services.maintainerr.loadbalancer.server.port=6246"
+    restart: unless-stopped

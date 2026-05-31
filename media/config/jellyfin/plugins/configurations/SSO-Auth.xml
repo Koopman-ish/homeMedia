@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SamlConfigs />
+  <OidConfigs>
+    <item>
+      <key>
+        <string>Authentik</string>
+      </key>
+      <value>
+        <PluginConfiguration>
+          <OidEndpoint>https://authentik.homelab.lan/application/o/jellyfin</OidEndpoint>
+          <OidClientId>tjaleHVxd9Z6YuaR2m55HZbPpKaxwZAtJabtH6E8</OidClientId>
+          <OidSecret>pxzmH5AmUBmYeAE4XoZDFzz32RRrjbmxstYczLglxUFbMs5YiV5B68PnUWbUi4vJ2tF3jU2e5tAzi7WfCciiJubUmxSOWkgmnp5SGk6fLlIcq3zZpB4igrkRYEf6Abip</OidSecret>
+          <Enabled>true</Enabled>
+          <EnableAuthorization>true</EnableAuthorization>
+          <EnableAllFolders>true</EnableAllFolders>
+          <EnabledFolders />
+          <AdminRoles />
+          <Roles>
+            <string>family</string>
+          </Roles>
+          <EnableFolderRoles>false</EnableFolderRoles>
+          <EnableLiveTvRoles>false</EnableLiveTvRoles>
+          <EnableLiveTv>false</EnableLiveTv>
+          <EnableLiveTvManagement>false</EnableLiveTvManagement>
+          <LiveTvRoles />
+          <LiveTvManagementRoles />
+          <FolderRoleMappings />
+          <OidScopes />
+          <SchemeOverride>https</SchemeOverride>
+          <PortOverride xsi:nil="true" />
+          <NewPath>true</NewPath>
+          <CanonicalLinks />
+          <DisableHttps>false</DisableHttps>
+          <DisablePushedAuthorization>false</DisablePushedAuthorization>
+          <DoNotValidateEndpoints>false</DoNotValidateEndpoints>
+          <DoNotValidateIssuerName>false</DoNotValidateIssuerName>
+          <DoNotLoadProfile>false</DoNotLoadProfile>
+        </PluginConfiguration>
+      </value>
+    </item>
+  </OidConfigs>
+</PluginConfiguration>
